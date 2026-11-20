@@ -1,0 +1,14 @@
+# Secrets: never commit these
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data and local files
+data/synthea/
+*.log
+.DS_Store
