@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-
+from agents.notify import send_via_n8n
 from agents.alerts import send_staff_notice
 from agents.alerts import send_urgent_alert
 from agents.confirm import send_confirmation
@@ -181,10 +181,133 @@ def run_confirmation_retries() -> dict:
             pass
     return out
 
+def _claim_slot_reminders():
+    with get_connection() as conn:
+        return conn.execute(
+            """update careflow.follow_ups
+               set due_at = now() + make_interval(mins => %s),
+                   attempt_count = attempt_count + 1
+               where id in (
+                   select id from careflow.follow_ups
+                   where kind = 'patient_slot_reminder' and status = 'pending'
+                     and due_at <= now() and attempt_count < 5
+                   order by due_at limit %s for update skip locked)
+               returning id, request_id""",
+            (LEASE_MINUTES, BATCH),
+        ).fetchall()
+
+
+def run_patient_slot_reminders() -> dict:
+    out = {"claimed": 0, "sent": 0, "cancelled": 0, "failed": 0}
+    for fu in _claim_slot_reminders():
+        out["claimed"] += 1
+        if _request_status(fu["request_id"]) != "waiting_patient":
+            _finish(fu["id"], "cancelled")           # the patient already acted
+            out["cancelled"] += 1
+            continue
+        with get_connection() as conn:
+            req = conn.execute(
+                """select r.patient_id, r.offered_slots, p.email, p.first_name
+                   from careflow.patient_requests r
+                   join careflow.patients p on p.id = r.patient_id
+                   where r.id = %s""",
+                (fu["request_id"],),
+            ).fetchone()
+        if (req is None or not req["offered_slots"]
+                or (req["email"] or "").lower().endswith("@example.com")):
+            _finish(fu["id"], "cancelled")           # nothing to send, or a demo address
+            out["cancelled"] += 1
+            continue
+
+        options = "\n".join(f"{i}. {o['label']}" for i, o in enumerate(req["offered_slots"], 1))
+        body = (
+            f"Hello {req['first_name']},\n\n"
+            "You have not yet chosen a slot for your appointment. The options below are still "
+            "available, but they are not reserved and may be taken by someone else.\n\n"
+            f"{options}\n\n"
+            "Please choose your slot through our booking form. If we do not hear from you, "
+            "these offers will expire.\n\n"
+            "CareFlow Demo Hospital (simulated)"
+        )
+        try:
+            res = send_via_n8n(
+                request_id=fu["request_id"], patient_id=req["patient_id"],
+                key=f"patient-{fu['request_id']}-slot-reminder",
+                kind="patient_slot_reminder", to_email=req["email"],
+                subject="Reminder: please choose an appointment slot", body=body,
+                template="booking_slot_reminder_v1",
+            )
+            ok = res["status"] in ("sent", "already_sent")
+        except Exception:
+            ok = False
+        if ok:
+            _finish(fu["id"], "sent")
+            out["sent"] += 1
+        else:
+            out["failed"] += 1                       # retried after the lease, up to 5 times
+    return out
+
+
+def _claim_slot_expiry():
+    with get_connection() as conn:
+        return conn.execute(
+            """update careflow.follow_ups
+               set due_at = now() + make_interval(mins => %s)
+               where id in (
+                   select id from careflow.follow_ups
+                   where kind = 'patient_slot_expiry' and status = 'pending' and due_at <= now()
+                   order by due_at limit %s for update skip locked)
+               returning id, request_id""",
+            (LEASE_MINUTES, BATCH),
+        ).fetchall()
+
+
+def run_patient_slot_expiry() -> dict:
+    out = {"claimed": 0, "expired": 0, "cancelled": 0}
+    for fu in _claim_slot_expiry():
+        out["claimed"] += 1
+        with get_connection() as conn:
+            done = conn.execute(
+                """update careflow.patient_requests
+                   set status = 'expired', offered_slots = '[]'::jsonb, updated_at = now()
+                   where id = %s and status = 'waiting_patient' returning id""",
+                (fu["request_id"],),
+            ).fetchone()
+            if done is None:                         # the patient chose in time
+                conn.execute("update careflow.follow_ups set status = 'cancelled' where id = %s", (fu["id"],))
+                out["cancelled"] += 1
+                continue
+            conn.execute(
+                """insert into careflow.request_events
+                       (request_id, from_status, to_status, actor, note)
+                   values (%s, 'waiting_patient', 'expired', 'system',
+                           'Patient did not choose a slot before the expiry limit')""",
+                (fu["request_id"],),
+            )
+            conn.execute(
+                "update careflow.follow_ups set status = 'sent', sent_at = now() where id = %s", (fu["id"],)
+            )
+            conn.execute(
+                """update careflow.follow_ups set status = 'cancelled'
+                   where request_id = %s and kind = 'patient_slot_reminder' and status = 'pending'""",
+                (fu["request_id"],),
+            )
+        out["expired"] += 1
+    return out
+
+
+def _safe(fn):
+    try:
+        return fn()
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+    
 def run_tick() -> dict:
     return {
-        "urgent_realerts": run_urgent_realerts(),
-        "approval_reminders": run_approval_reminders(),
-        "approval_escalations": run_approval_escalations(),
-        "confirmation_retries": run_confirmation_retries(),
+        "urgent_realerts": _safe(run_urgent_realerts),
+        "approval_reminders": _safe(run_approval_reminders),
+        "approval_escalations": _safe(run_approval_escalations),
+        "confirmation_retries": _safe(run_confirmation_retries),
+        "patient_slot_reminders": _safe(run_patient_slot_reminders),
+        "patient_slot_expiry": _safe(run_patient_slot_expiry),
     }

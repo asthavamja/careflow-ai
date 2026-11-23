@@ -1,4 +1,6 @@
 import time
+from agents.cancel import cancel_appointment, send_cancellation_notice, verify_cancel
+from agents.waitlist import offer_freed_slot
 from agents.checkpoint import checkpointer
 from agents.trail import create_approval, link_patient
 from agents.validation import validate_patient
@@ -9,7 +11,7 @@ from agents.routing import run_routing
 from agents.intake import PROMPT_VERSION, run_intake
 from agents.intake_checks import finalize_intake
 from agents.state import CareFlowState
-from agents.trail import change_status, log_step, save_intake_result
+from agents.trail import change_status, log_step, save_intake_result,schedule_slot_followups
 from agents.scheduling import PROMPT_VERSION as SCHEDULING_VERSION
 from agents.scheduling import find_offers
 from agents.trail import save_offers
@@ -100,6 +102,8 @@ def after_validation(state: CareFlowState) -> str:
         return "review"
     if match == "insufficient_info" or (match == "new" and state["request_type"] == "book_appointment"):
         return "ask"
+    if match == "skipped" and state["request_type"] == "cancel":
+        return "cancel"
     return "continue"
 
 
@@ -187,6 +191,7 @@ def after_scheduling(state: CareFlowState) -> str:
 
 def offer_node(state: CareFlowState):
     save_offers(state["request_id"], state["offers"])
+    schedule_slot_followups(state["request_id"])
     change_status(state["request_id"], "waiting_patient", "system",
                   f"{len(state['offers'])} slots offered, waiting for the patient to choose")
     return {"next_status": "waiting_patient"}
@@ -267,6 +272,33 @@ def urgent_node(state: CareFlowState):
              error_message=None if ok else err)
     return {"next_status": "urgent_escalated"}
 
+def cancel_node(state: CareFlowState):
+    rid = state["request_id"]
+    appt, reason = verify_cancel(state["details"])
+    slot_id = cancel_appointment(appt["id"]) if appt else None
+    if slot_id is None:
+        reason = reason or "appointment no longer active"
+        aid = create_approval(rid, "failed_identity_check")
+        change_status(rid, "awaiting_approval", "system", "Cancellation could not be verified")
+        log_step(rid, "cancel_agent", "tool", "success", input_summary="cancellation check",
+                 output={"verified": False, "reason": reason})
+        return {"next_status": "awaiting_approval", "approval_id": aid,
+                "review_reason": "failed_identity_check", "cancel_result": "review"}
+    sent = send_cancellation_notice(rid, appt)
+    try:
+        offer = offer_freed_slot(slot_id)
+    except Exception:
+        offer = None
+    log_step(rid, "cancel_agent", "tool", "success", input_summary="cancellation check",
+             output={"verified": True, "freed_slot_id": slot_id, "notice_sent": sent,
+                     "waitlist_offered": offer is not None})
+    change_status(rid, "closed", "system", "Appointment cancelled and slot freed")
+    return {"next_status": "closed", "freed_slot_id": slot_id, "cancel_result": "done"}
+
+
+def after_cancel(state: CareFlowState) -> str:
+    return "review" if state["cancel_result"] == "review" else "end"
+
 builder = StateGraph(CareFlowState)
 builder.add_node("intake_agent", intake_node)
 builder.add_node("validation_agent", validation_node)
@@ -283,6 +315,7 @@ builder.add_node("offer_slots", offer_node)
 builder.add_node("no_slots", no_slots_node)
 builder.add_node("wait_for_staff", wait_for_staff_node)
 builder.add_node("apply_decision", apply_decision_node)
+builder.add_node("cancel_agent", cancel_node)
 
 builder.add_edge(START, "intake_agent")
 builder.add_conditional_edges(
@@ -292,8 +325,8 @@ builder.add_conditional_edges(
 )
 builder.add_conditional_edges(
     "validation_agent", after_validation,
-    {"failed": "mark_failed", "review": "staff_review",
-     "ask": "ask_patient", "continue": "mark_validated"},
+        {"failed": "mark_failed", "review": "staff_review",
+        "ask": "ask_patient", "continue": "mark_validated", "cancel": "cancel_agent"},
 )
 builder.add_conditional_edges(
     "mark_validated", after_validated,
@@ -317,7 +350,10 @@ builder.add_conditional_edges(
     "apply_decision", after_decision,
     {"stop": END, "to_routing": "routing_agent", "to_scheduling": "scheduling_agent"},
 )
-
+builder.add_conditional_edges(
+    "cancel_agent", after_cancel,
+    {"review": "wait_for_staff", "end": END},
+)
 graph = builder.compile(checkpointer=checkpointer)
 
 def run_request(request_id: int):

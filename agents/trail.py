@@ -78,3 +78,20 @@ def save_offers(request_id, offers):
             "update careflow.patient_requests set offered_slots = %s, updated_at = now() where id = %s",
             (Jsonb(offers), request_id),
         )
+
+def schedule_slot_followups(request_id):
+    with get_connection() as conn:
+        s = {r["key"]: r["value"] for r in conn.execute(
+            """select key, value from careflow.system_settings
+               where key in ('patient_reminder_hours', 'patient_expire_hours')"""
+        ).fetchall()}
+        plan = (("patient_slot_reminder", float(s.get("patient_reminder_hours", 12))),
+                ("patient_slot_expiry",   float(s.get("patient_expire_hours", 24))))
+        for kind, hours in plan:
+            conn.execute(
+                """insert into careflow.follow_ups (request_id, kind, due_at)
+                   select %s, %s, now() + %s * interval '1 hour'
+                   where not exists (select 1 from careflow.follow_ups
+                                     where request_id = %s and kind = %s and status = 'pending')""",
+                (request_id, kind, hours, request_id, kind),
+            )

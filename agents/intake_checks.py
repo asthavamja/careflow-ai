@@ -4,7 +4,7 @@ REQUIRED = {
     "new_registration": ["first_name", "last_name", "date_of_birth", "phone"],
     "book_appointment": ["first_name", "last_name", "named_department"],
     "reschedule":       ["appointment_code", "preferred_date_time"],
-    "cancel":           ["appointment_code"],
+    "cancel":           ["first_name", "last_name", "appointment_code"],
     "documents":        [],
     "unclear":          [],
 }

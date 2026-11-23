@@ -36,3 +36,6 @@ class CareFlowState(TypedDict, total=False):
     review_reason: str
     decision: dict
     outcome: str
+    # Written by the cancel step
+    cancel_result: str
+    freed_slot_id: int

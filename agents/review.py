@@ -9,6 +9,7 @@ ALLOWED = {
     "unclear_department": ["choose_department", "more_info_needed", "reject"],
     "special_authorization": ["approve_without_referral", "request_referral", "reject"],
     "other": ["more_info_needed", "reject"],
+    "failed_identity_check": ["more_info_needed", "reject"],
 }
 DEFAULT_ALLOWED = ["approve", "reject", "more_info_needed"]
 
