@@ -27,3 +27,9 @@ class DecideIn(BaseModel):
     patient_id: Optional[int] = None
     department_id: Optional[int] = None
     reason: Optional[str] = Field(default=None, max_length=500)
+
+class AckIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    reviewer_id: int
+    note: Optional[str] = Field(default=None, max_length=500)

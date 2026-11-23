@@ -15,6 +15,15 @@ def _status(request_id):
             "select status from careflow.patient_requests where id = %s", (request_id,)
         ).fetchone()["status"]
 
+def _attempts_left(log_id):
+    with get_connection() as conn:
+        used = conn.execute(
+            "select attempt_count from careflow.automation_logs where id = %s", (log_id,)
+        ).fetchone()["attempt_count"]
+        row = conn.execute(
+            "select value from careflow.system_settings where key = 'automation_max_attempts'"
+        ).fetchone()
+    return used < (int(row["value"]) if row else 4)
 
 def send_confirmation(appointment_id: int):
     f = get_confirmation_facts(appointment_id)
@@ -38,17 +47,22 @@ def send_confirmation(appointment_id: int):
             key=f"appt-{appointment_id}-confirmation", kind="booking_confirmation",
             to_email=f["email"], subject=subject, body=body,
             template="booking_confirmation_v2",
+            meta={"appointment_id": appointment_id},
         )
         sent = result["status"] in ("sent", "already_sent")
         reason = result.get("error")
+        retryable = bool(result.get("retryable"))
     except Exception as exc:
-        sent, reason = False, type(exc).__name__
+        result, sent, reason, retryable = {}, False, type(exc).__name__, False
 
-    if _status(rid) == "executing":
-        if sent:
-            change_status(rid, "confirmed", "n8n", "Confirmation email sent")
-        else:
-            change_status(rid, "failed", "n8n", f"Confirmation could not be sent: {reason}")
+    if _status(rid) != "executing":
+        return
+    if sent:
+        change_status(rid, "confirmed", "n8n", "Confirmation email sent")
+    elif retryable and _attempts_left(result["log_id"]):
+        return      # stays "executing"; the scheduler will retry
+    else:
+        change_status(rid, "failed", "n8n", f"Confirmation could not be sent: {reason}")
 
 
 def run_confirmation(appointment_id: int):

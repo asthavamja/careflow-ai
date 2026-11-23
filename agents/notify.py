@@ -46,7 +46,7 @@ def template_confirmation(f: dict) -> tuple[str, str]:
     return subject, body
 
 
-def send_via_n8n(*, request_id, patient_id, key, kind, to_email, subject, body, template):
+def send_via_n8n(*, request_id, patient_id, key, kind, to_email, subject, body, template,meta=None):
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to_email or ""):
         raise ValueError("invalid email address")
     if not settings.n8n_webhook_url:
@@ -61,7 +61,7 @@ def send_via_n8n(*, request_id, patient_id, key, kind, to_email, subject, body, 
                    (request_id, workflow_name, action, idempotency_key, status, request_payload)
                values (%s, 'careflow-patient-message', %s, %s, 'pending', %s)
                on conflict (idempotency_key) do nothing returning id""",
-            (request_id, kind, key, Jsonb({"template": template})),
+                    (request_id, kind, key, Jsonb({"template": template, **(meta or {})})),
         ).fetchone()
         if row is None:
             old = conn.execute(
@@ -105,4 +105,5 @@ def send_via_n8n(*, request_id, patient_id, key, kind, to_email, subject, body, 
             (request_id, patient_id, template, "sent" if ok else "failed", log_id,
              datetime.now(timezone.utc) if ok else None),
         )
-    return {"status": "sent" if ok else "failed", "log_id": log_id, "error": error}
+        return {"status": "sent" if ok else "failed", "log_id": log_id, "error": error,
+            "retryable": (not ok) and (http_status is None or http_status >= 500)}

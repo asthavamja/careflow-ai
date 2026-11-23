@@ -19,6 +19,7 @@ class Settings:
     groq_model: str
     n8n_shared_secret: str
     n8n_webhook_url: str
+    n8n_alert_webhook_url: str
 
 
 def get_settings() -> Settings:
@@ -35,6 +36,7 @@ def get_settings() -> Settings:
         groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
         n8n_shared_secret=os.getenv("N8N_SHARED_SECRET", ""),
         n8n_webhook_url=os.getenv("N8N_WEBHOOK_URL", ""),
+        n8n_alert_webhook_url=os.getenv("N8N_ALERT_WEBHOOK_URL", ""),
     )
 
 

@@ -13,6 +13,7 @@ from agents.trail import change_status, log_step, save_intake_result
 from agents.scheduling import PROMPT_VERSION as SCHEDULING_VERSION
 from agents.scheduling import find_offers
 from agents.trail import save_offers
+from agents.alerts import send_urgent_alert
 from api.config import settings
 from api.db import get_connection
 
@@ -253,12 +254,25 @@ def apply_decision_node(state: CareFlowState):
 def after_decision(state: CareFlowState) -> str:
     return state["outcome"]
 
+def urgent_node(state: CareFlowState):
+    rid = state["request_id"]
+    change_status(rid, "urgent_escalated", "system", "Urgent wording detected")
+    try:
+        res = send_urgent_alert(rid)
+        ok, err = res["status"] in ("sent", "already_sent"), res.get("error")
+    except Exception as exc:
+        ok, err = False, type(exc).__name__
+    log_step(rid, "urgent_alert", "tool", "success" if ok else "failed",
+             input_summary="urgent flag", output={"alert_sent": ok},
+             error_message=None if ok else err)
+    return {"next_status": "urgent_escalated"}
+
 builder = StateGraph(CareFlowState)
 builder.add_node("intake_agent", intake_node)
 builder.add_node("validation_agent", validation_node)
 builder.add_node("routing_agent", routing_node)
 builder.add_node("scheduling_agent", scheduling_node)
-builder.add_node("escalate_urgent", make_status_node("urgent_escalated", "Urgent wording detected"))
+builder.add_node("escalate_urgent", urgent_node)
 builder.add_node("mark_failed", make_status_node("failed", "A step could not finish"))
 builder.add_node("ask_patient", make_status_node("waiting_patient", "More information needed"))
 builder.add_node("staff_review", review_node)
