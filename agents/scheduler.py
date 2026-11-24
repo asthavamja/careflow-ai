@@ -1,9 +1,18 @@
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from agents.notify import send_via_n8n
 from agents.alerts import send_staff_notice
 from agents.alerts import send_urgent_alert
 from agents.confirm import send_confirmation
+from agents.documents import (
+    expire_document_request,
+    get_document_reminder_context,
+    send_document_reminder,
+)
 from api.db import get_connection
+from agents.waitlist import expire_waitlist_offers, expire_waiting_entries
+
+logger = logging.getLogger("careflow")
 
 LEASE_MINUTES = 2
 BATCH = 10
@@ -296,6 +305,66 @@ def run_patient_slot_expiry() -> dict:
     return out
 
 
+def _claim_missing_document_followups():
+    with get_connection() as conn:
+        return conn.execute(
+            """update careflow.follow_ups
+               set due_at = now() + make_interval(mins => %s),
+                   attempt_count = attempt_count + 1
+               where id in (
+                   select id from careflow.follow_ups
+                   where kind = 'missing_document' and status = 'pending'
+                     and due_at <= now()
+                   order by due_at limit %s for update skip locked)
+               returning id, request_id, created_at, attempt_count""",
+            (LEASE_MINUTES, BATCH),
+        ).fetchall()
+
+
+def run_missing_document_followups() -> dict:
+    reminder_hours = _minutes("patient_reminder_hours", 12)
+    expiry_hours = _minutes("patient_expire_hours", 24)
+    if reminder_hours <= 0 or expiry_hours <= reminder_hours:
+        raise ValueError("Document reminder/expiry settings must be positive and expiry later than reminder")
+
+    out = {"claimed": 0, "sent": 0, "expired": 0, "cancelled": 0, "failed": 0}
+    for fu in _claim_missing_document_followups():
+        out["claimed"] += 1
+        try:
+            context = get_document_reminder_context(fu["request_id"])
+            if context["request_status"] != "waiting_patient" or not context["missing"]:
+                _finish(fu["id"], "cancelled")
+                out["cancelled"] += 1
+                continue
+
+            if datetime.now(timezone.utc) - fu["created_at"] >= timedelta(hours=expiry_hours):
+                if expire_document_request(fu["request_id"], fu["id"]):
+                    out["expired"] += 1
+                else:
+                    out["cancelled"] += 1
+                continue
+
+            result = send_document_reminder(fu["request_id"], fu["attempt_count"])
+            if result["status"] in ("sent", "already_sent"):
+                with get_connection() as conn:
+                    conn.execute(
+                        """update careflow.follow_ups
+                           set due_at = now() + make_interval(hours => %s)
+                           where id = %s and status = 'pending'""",
+                        (reminder_hours, fu["id"]),
+                    )
+                out["sent"] += 1
+            elif result["status"] == "not_needed":
+                _finish(fu["id"], "cancelled")
+                out["cancelled"] += 1
+            else:
+                out["failed"] += 1
+        except Exception as exc:
+            logger.error("Missing-document follow-up failed: %s", type(exc).__name__)
+            out["failed"] += 1
+    return out
+
+
 def _safe(fn):
     try:
         return fn()
@@ -310,4 +379,7 @@ def run_tick() -> dict:
         "confirmation_retries": _safe(run_confirmation_retries),
         "patient_slot_reminders": _safe(run_patient_slot_reminders),
         "patient_slot_expiry": _safe(run_patient_slot_expiry),
+        "missing_document_followups": _safe(run_missing_document_followups),
+        "waitlist_expiry": _safe(expire_waitlist_offers),
+        "waitlist_entry_expiry": _safe(expire_waiting_entries),
     }

@@ -15,6 +15,7 @@ router = APIRouter()
 ROLES_BY_LEVEL = {1: {"receptionist", "coordinator", "approver"}, 2: {"approver"}}
 DB_DECISION = {
     "same_person": "approved", "different_person": "approved",
+    "approve_registration": "approved",
     "choose_department": "approved", "approve_without_referral": "approved",
     "reject": "rejected",
     "more_info_needed": "more_info_needed", "request_referral": "more_info_needed",

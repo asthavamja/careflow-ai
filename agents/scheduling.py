@@ -86,15 +86,25 @@ def _resolve_window(t: Timing, today: date):
         return None
     return (max(start, today + timedelta(days=1)), min(end, last))
 
-def _query(department_id: int, window: tuple, part: str):
+def _query(
+    department_id: int,
+    window: tuple,
+    part: str,
+    *,
+    exclude_slot_id: int | None = None,
+    doctor_id: int | None = None,
+    limit: int = OFFER_COUNT,
+):
     start_dt = datetime.combine(window[0], time.min, IST)
     end_dt = datetime.combine(window[1] + timedelta(days=1), time.min, IST)
     with get_connection() as conn:
         return conn.execute(
-            """select s.id, s.start_time, d.name as doctor_name
+            """select s.id, s.start_time, d.id as doctor_id, d.name as doctor_name
                from careflow.time_slots s
                join careflow.doctors d on d.id = s.doctor_id
                where d.department_id = %(dept)s and d.is_active
+                 and (%(exclude)s::bigint is null or s.id <> %(exclude)s)
+                 and (%(doctor)s::bigint is null or d.id = %(doctor)s)
                  and (s.status = 'free' or (s.status = 'held' and s.held_until < now()))
                  and s.start_time > now()
                  and s.start_time >= %(start)s and s.start_time < %(end)s
@@ -111,10 +121,18 @@ def _query(department_id: int, window: tuple, part: str):
                order by s.start_time, d.id
                limit %(limit)s""",
             {"dept": department_id, "start": start_dt, "end": end_dt,
-             "part": part, "limit": OFFER_COUNT},
+             "part": part, "limit": limit, "exclude": exclude_slot_id,
+             "doctor": doctor_id},
         ).fetchall()
 
-def find_offers(department_id: int, preferred: Optional[str]) -> dict:
+
+def find_offers(
+    department_id: int,
+    preferred: Optional[str],
+    *,
+    exclude_slot_id: int | None = None,
+    preferred_doctor_id: int | None = None,
+) -> dict:
     today = datetime.now(IST).date()
     default = (today + timedelta(days=1), today + timedelta(days=MAX_DAYS_AHEAD))
     window, part, source, llm_used = default, "any", "earliest available", False
@@ -132,11 +150,25 @@ def find_offers(department_id: int, preferred: Optional[str]) -> dict:
             else:
                 source = "earliest available (no usable date)"
 
-    rows = _query(department_id, window, part)
+    rows = _query(
+        department_id, window, part, exclude_slot_id=exclude_slot_id,
+    )
     widened = False
     if not rows and (window != default or part != "any"):
-        rows = _query(department_id, default, "any")
+        window, part = default, "any"
+        rows = _query(
+            department_id, window, part, exclude_slot_id=exclude_slot_id,
+        )
         widened = True
+
+    if rows and preferred_doctor_id is not None:
+        same_doctor = _query(
+            department_id, window, part, exclude_slot_id=exclude_slot_id,
+            doctor_id=preferred_doctor_id, limit=1,
+        )
+        if same_doctor and all(r["id"] != same_doctor[0]["id"] for r in rows):
+            rows = rows[:OFFER_COUNT - 1] + same_doctor
+            rows.sort(key=lambda r: (r["start_time"], r["doctor_id"]))
 
     offers = []
     for r in rows:
@@ -149,6 +181,19 @@ def find_offers(department_id: int, preferred: Optional[str]) -> dict:
         })
     return {"offers": offers, "source": source, "widened": widened, "llm_used": llm_used}
 
+
+def find_reschedule_offers(
+    department_id: int,
+    preferred: Optional[str],
+    old_slot_id: int,
+    doctor_id: int,
+) -> dict:
+    return find_offers(
+        department_id,
+        preferred,
+        exclude_slot_id=old_slot_id,
+        preferred_doctor_id=doctor_id,
+    )
 
 
 def hold_slot(slot_id: int):

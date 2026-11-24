@@ -3,6 +3,7 @@ from typing import Optional, TypedDict
 class CareFlowState(TypedDict, total=False):
     request_id: int
     raw_text: str
+    contact_email: Optional[str]
 
     # Written by the Intake Agent
     request_type: str
@@ -39,3 +40,6 @@ class CareFlowState(TypedDict, total=False):
     # Written by the cancel step
     cancel_result: str
     freed_slot_id: int
+    # Written by the reschedule step
+    reschedule_result: str
+    reschedule_context: dict

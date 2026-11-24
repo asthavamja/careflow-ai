@@ -13,6 +13,7 @@ Rules:
 1. Fill a field only with what the patient actually wrote. If a detail is not in the message, use null. Never guess or invent.
 2. request_type is one of: new_registration, book_appointment, reschedule, cancel, documents, unclear.
    - book_appointment: the patient asks to see a doctor, a type of doctor, or a department, or asks for an appointment. Giving a name or phone number while asking is still book_appointment.
+   - reschedule: the patient asks to move or change an existing appointment to another time.
    - new_registration: ONLY when the patient explicitly says they want to register, sign up, or become a new patient.
    - Use unclear for greetings, unrelated text, or when you cannot tell.
 3. named_department: only a specialty or doctor type the patient named (for example "skin specialist" or "cardiologist"). If the patient only describes symptoms, use null. Never choose a department from symptoms.

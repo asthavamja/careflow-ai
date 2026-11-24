@@ -1,9 +1,9 @@
 from agents.urgent import find_urgent_phrases
 
 REQUIRED = {
-    "new_registration": ["first_name", "last_name", "date_of_birth", "phone"],
+    "new_registration": ["first_name", "last_name", "date_of_birth", "phone", "email"],
     "book_appointment": ["first_name", "last_name", "named_department"],
-    "reschedule":       ["appointment_code", "preferred_date_time"],
+    "reschedule":       ["first_name", "last_name", "appointment_code"],
     "cancel":           ["first_name", "last_name", "appointment_code"],
     "documents":        [],
     "unclear":          [],

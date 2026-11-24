@@ -22,7 +22,8 @@ def verify_cancel(details: dict):
         row = conn.execute(
             """select a.id, a.status, a.slot_id, a.patient_id, a.appointment_code,
                       s.start_time, p.first_name, p.last_name, p.email,
-                      doc.name as doctor_name, dep.name as department
+                      doc.id as doctor_id, doc.name as doctor_name,
+                      dep.id as department_id, dep.name as department
                from careflow.appointments a
                join careflow.time_slots s on s.id = a.slot_id
                join careflow.doctors doc on doc.id = s.doctor_id

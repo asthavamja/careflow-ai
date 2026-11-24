@@ -7,6 +7,8 @@ ALLOWED = {
     "possible_duplicate": ["same_person", "different_person", "more_info_needed", "reject"],
     "duplicate_conflict": ["same_person", "different_person", "more_info_needed", "reject"],
     "unclear_department": ["choose_department", "more_info_needed", "reject"],
+    "unclear_request": ["reject"],
+    "minor_patient": ["approve_registration", "reject"],
     "special_authorization": ["approve_without_referral", "request_referral", "reject"],
     "other": ["more_info_needed", "reject"],
     "failed_identity_check": ["more_info_needed", "reject"],

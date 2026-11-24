@@ -14,10 +14,11 @@ IST = ZoneInfo("Asia/Kolkata")
 def get_confirmation_facts(appointment_id: int) -> dict:
     with get_connection() as conn:
         r = conn.execute(
-            """select a.id, a.appointment_code, a.request_id, s.start_time,
+            """select a.id, a.appointment_code, a.request_id, r.request_type, s.start_time,
                       doc.name as doctor_name, dep.name as department,dep.requires_referral,
                       p.id as patient_id, p.first_name, p.email
                from careflow.appointments a
+               left join careflow.patient_requests r on r.id = a.request_id
                join careflow.time_slots s on s.id = a.slot_id
                join careflow.doctors doc on doc.id = s.doctor_id
                join careflow.departments dep on dep.id = doc.department_id

@@ -44,6 +44,32 @@ def change_status(request_id, to_status, actor, note=None, actor_user_id=None):
         return row["status"]
 
 
+def mark_waitlist_request(request_id: int, department_id: int | None,
+                          to_status: str, note: str):
+    """Persist the no-slots department, clear stale offers, and record the transition."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "select status from careflow.patient_requests where id = %s for update",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("request not found")
+        conn.execute(
+            """update careflow.patient_requests
+               set department_id = %s, offered_slots = '[]'::jsonb,
+                   status = %s, updated_at = now()
+               where id = %s""",
+            (department_id, to_status, request_id),
+        )
+        conn.execute(
+            """insert into careflow.request_events
+                 (request_id, from_status, to_status, actor, note)
+               values (%s, %s, %s, 'system', %s)""",
+            (request_id, row["status"], to_status, note),
+        )
+        return row["status"]
+
+
 def save_intake_result(request_id, request_type, details, urgent_flag, urgent_reason):
     """Store what Intake found on the request itself."""
     with get_connection() as conn:
@@ -61,6 +87,20 @@ def link_patient(request_id, patient_id):
             "update careflow.patient_requests set patient_id = %s, updated_at = now() where id = %s",
             (patient_id, request_id),
         )
+
+
+def save_reschedule_context(request_id, appointment_id, patient_id, department_id):
+    with get_connection() as conn:
+        row = conn.execute(
+            """update careflow.patient_requests
+               set reschedule_appointment_id = %s, patient_id = %s,
+                   department_id = %s, updated_at = now()
+               where id = %s and status = 'received'
+               returning id""",
+            (appointment_id, patient_id, department_id, request_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("reschedule request is no longer processing")
 
 
 def create_approval(request_id, reason):
